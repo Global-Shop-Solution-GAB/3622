@@ -1,0 +1,206 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Variable.UDT.UContact.Define("CUSTOMER",String,CUSTOMER)
+Variable.UDT.UContact.Define("CUST_EMAIL",String)
+Variable.UDT.UContact.Define("DELETE",String)
+Variable.uGlobal.uContact.Declare("UContact")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.ssql.Declare(String)
+V.Local.i.Declare(String)
+V.Local.i2.Declare(String)
+V.Local.sfile.Declare(String)
+V.Local.bexists.Declare(Boolean)
+V.Local.sparams.Declare(String)
+V.Local.srptid.Declare(String)
+V.Local.svals.Declare(String)
+V.Local.ssavefilepath.Declare(String)
+V.Local.iarstatuscount.Declare(Long)
+V.Local.sret.Declare(String)
+V.Local.iret.Declare(Long)
+V.Local.idelete.Declare(Long)
+V.Local.suseremail.Declare(String)
+V.Local.suser.Declare(String)
+V.Local.sfilename.Declare(String)
+V.Local.sfinalpath.Declare(String)
+
+'This is a custom program that will run from the task scheduler weekly and email AR Aging reports to customers with outstanding items
+'Coded by: WAW
+'Date: 02/19/2016
+
+'open connection
+F.odbc.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+F.ODBC.Connection!con.OpenConnection(Variable.Ambient.Ccon,Variable.Ambient.Cuser,Variable.Ambient.Cpass)
+
+F.Intrinsic.String.Build("Select EMAIL from USER_INFORMATION where GS_USER = '{0}'",V.Caller.User,V.Local.ssql)
+F.ODBC.Connection!con.OpenRecordsetRO("rst2",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.con!rst2.EOF,<>,True)
+	V.Local.suseremail.Set(V.ODBC.con!rst2.FieldValTrim!EMAIL)
+F.Intrinsic.Control.EndIf
+F.ODBC.con!rst2.Close
+
+'build the filepath
+F.Intrinsic.String.build("{0}{1}",V.Caller.FilesDir,"\AR Aging",V.Local.sfile)
+'see if the folder exists
+F.Intrinsic.File.Exists(V.Local.sfile,V.Local.bexists)
+
+'if the file doesn't exists create it
+F.Intrinsic.Control.If(V.Local.bexists,=,False)
+	F.Intrinsic.File.CreateDir(V.Local.sfile)
+F.Intrinsic.Control.EndIf
+
+F.Global.Security.GetUserId(V.Caller.User,V.Caller.CompanyCode,V.Local.sUser)
+
+'set the report ID
+V.Local.srptid.Set("000568")
+
+'select all the customers in ar open items
+F.Intrinsic.String.Build("Select distinct Customer from V_AR_OPEN_ITEMS where CUSTOMER <> '{0}'","",V.Local.ssql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,=,False)
+	'load them to the uContact UDT
+	F.Intrinsic.Variable.LoadUDTFromRecordset("conx","rst","v.uGlobal.uContact",True)
+F.Intrinsic.Control.EndIf
+	F.ODBC.conx!rst.Close
+
+'loop through the customers, get their invoices and get their ar status, if they have an ar status greater than 0 set their DELETE to NO
+F.Intrinsic.Control.For(V.Local.iarstatuscount,V.uGlobal.uContact.LBound,V.uGlobal.uContact.UBound,1)
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uContact!DELETE,"DELETE")
+	F.Intrinsic.String.Build("Select INVOICE from V_AR_OPEN_ITEMS where CUSTOMER = '{0}'",V.uGlobal.uContact(v.Local.iarstatuscount)!CUSTOMER,V.Local.ssql)
+	F.ODBC.Connection!conX.OpenRecordsetRO("rst",V.Local.sSql)
+	F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+		F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+		F.Global.Accounting.GetARItemStatus(v.uGlobal.uContact(v.Local.iarstatuscount)!CUSTOMER,v.odbc.conx!rst.FieldValTrim!INVOICE,v.Local.sRet)
+		F.Intrinsic.Control.If(V.Local.sRet,<>,"***NORETURN***")
+				F.Intrinsic.String.Split(V.Local.sRet,"*!*",V.Local.sRet)
+				F.Intrinsic.Math.ConvertToFloat(V.Local.sRet(2).Trim,V.Local.iRet)
+				'if there is a return greater than zero flag them as no
+				F.Intrinsic.Control.If(V.Local.iRet,>,0)
+					V.uGlobal.uContact(v.Local.iarstatuscount)!DELETE.Set("No")
+				F.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.EndIf
+		F.ODBC.conX!rst.MoveNext
+		F.Intrinsic.Control.Loop
+	'if there are no invoices flag that customer in the UDT for deletion
+'	F.ODBC.conx!rst.Close
+	F.Intrinsic.Control.Else
+'		V.uGlobal.uContact(v.Local.iarstatuscount)!DELETE.Set("Yes")
+
+	F.Intrinsic.Control.EndIf
+	F.ODBC.conx!rst.Close
+F.Intrinsic.Control.Next(V.Local.iarstatuscount)
+
+'loop through the contacts and if their delete is not equal to "no" flag them for deletion
+F.Intrinsic.Control.For(V.Local.idelete,V.uGlobal.uContact.LBound,V.uGlobal.uContact.UBound,1)
+	F.Intrinsic.Control.If(V.uGlobal.uContact(v.Local.idelete)!DELETE,<>,"No")
+		F.Intrinsic.Variable.UDTFlagOrdinal(V.uGlobal.uContact,True,V.Local.idelete)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.next(V.Local.idelete)
+
+'delete the flagged customers
+F.Intrinsic.Variable.UDTDeleteFlagged(V.uGlobal.uContact)
+
+'loop through the UDT and get the email addresses for all the contacts
+F.Intrinsic.Control.For(V.Local.i,V.uGlobal.uContact.LBound,V.uGlobal.uContact.UBound,1)
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uContact!CUST_EMAIL,"CUST_EMAIL")
+	'get the email address associated with the customer in the UDT
+	F.Intrinsic.string.Build("select CUST_EMAIL from ATG_CUSTOMER_EMAIL where CUSTOMER = '{0}'",V.uGlobal.uContact(v.Local.i)!CUSTOMER,V.Local.ssql)
+	F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSQL)
+	F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,=,False)
+		'set the email address in the UDT
+		V.uGlobal.uContact(v.Local.i)!CUST_EMAIL.Set(V.ODBC.conx!rst.FieldValTrim!CUST_EMAIL)
+
+	F.Intrinsic.Control.EndIf
+	'close connection
+	F.ODBC.conx!rst.Close
+'move to the next record
+F.Intrinsic.Control.Next(V.Local.i)
+
+'create the pdf of the report
+V.Local.sparams.Set("Terminal*!*Rptid*!*AgeOption*!*AllCust*!*BegName*!*EndName*!*SwitchP*!*Condense*!*PROGRAM*!*TITLE1*!*TITLE2*!*TITLE3")
+'V.Local.sparams.Set("Terminal*!*Rptid")
+
+F.Intrinsic.String.Split(V.Local.sParams,"*!*",V.Local.sParams)
+'loop through the UDT and begin saving the reports per customer
+F.Intrinsic.Control.For(V.Local.i2,V.uGlobal.uContact.LBound,V.uGlobal.uContact.UBound,1)
+	'build the values
+	F.Intrinsic.String.Build("{0}{1}{2}{1}{3}{1}{4}{1}{5}{1}{6}{1}{7}{1}{8}{1}{9}{1}{10}{1}{11}{1}{12}",V.Caller.Terminal,"*!*",V.local.srptid,"1","1",V.uGlobal.uContact(v.Local.i2)!CUSTOMER,V.uglobal.ucontact(v.local.i2)!CUSTOMER,"0","N","AR0100-000568","30 - 59","60 - 90","OVER 90",V.Local.svals)
+		F.Intrinsic.String.Split(V.Local.sVals,"*!*",V.Local.sVals)
+
+	'print the report in screenless mode
+	F.Global.BI.PrintReport("000568",1,V.local.sparams,V.local.svals,"",True)
+	'build the new file path
+	F.Intrinsic.String.build("{0}{1}{2}{3}",V.Caller.FilesDir,"\AR Aging\",V.uglobal.ucontact(v.local.i2)!CUSTOMER,".pdf",V.Local.ssavefilepath)
+	'save the report
+	F.Global.BI.SaveReport(V.Local.srptid,1,V.Local.sparams,V.Local.svals,V.Local.ssavefilepath)
+	'build the file name
+	F.Intrinsic.String.Build("{0}{1}",V.uGlobal.uContact(v.Local.i2)!CUSTOMER,".pdf",V.Local.sfilename)
+	'modify the file path
+	F.Intrinsic.String.Replace(V.Local.sfilename,"\\\","\\",V.Local.sfilename)
+		'build the return email/name string
+		F.Intrinsic.String.Build("{0}*!*{1}",V.local.suseremail,V.local.suseremail,V.Local.suseremail)
+	'get the file path without the name of the file
+	F.Intrinsic.String.build("{0}{1}",V.Caller.FilesDir,"\AR Aging\",V.Local.sfinalpath)
+	'modify the final path
+	F.Intrinsic.String.Replace(V.Local.sfinalpath,"\\\","\\",V.Local.sfinalpath)
+	'string together the name and path of the file to be sent
+	F.Intrinsic.String.Build("{0}*!*{1}",V.Local.sfilename,V.local.sfinalpath,V.Local.ssavefilepath)
+	'email the customers the report
+	F.Global.Messaging.QueueMessage(V.Caller.CompanyCode,V.Local.sUser,V.Caller.Caller,"Accounts Receivable Aging Report",V.local.suseremail,V.uglobal.uContact(v.local.i2)!CUST_EMAIL,"Please see report attached.",1,V.local.suseremail,False,"","","","","","","",V.local.ssavefilepath,False)
+
+F.Intrinsic.Control.next(V.Local.i2)
+
+'call the unload sub
+F.Intrinsic.Control.CallSub(Unload)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3622_AR_Aging.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+'close connection to the database
+F.ODBC.Connection!conx.Close
+
+'close connection to the database
+F.ODBC.Connection!con.Close
+
+'end the program
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3622_AR_Aging.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.Comments.Start
+${$0$}$GCG_7600_AR_Aging$}$WAW$}$2/19/2016
+Program.Sub.Comments.End
+
